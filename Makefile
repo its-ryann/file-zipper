@@ -1,5 +1,5 @@
 build:
-	go build -o bin/zip-it ./...
+	go build -o bin/zip-it .
 
 test:
 	go test ./...
