@@ -1,181 +1,222 @@
-# zip-it — A Gzip CLI Compressor
+#  zip-it
 
-> A high-performance command-line tool for compressing and decompressing files using the Gzip format. Built with streaming I/O to handle files far larger than available system RAM.
+![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat)
+![Build](https://img.shields.io/badge/build-passing-brightgreen?style=flat)
+![TDD](https://img.shields.io/badge/built%20with-TDD-blue?style=flat)
+
+> A high-performance CLI tool for Gzip compression and decompression, built in Go. Processes files of any size using streaming I/O, reports real-time performance metrics, and compresses multiple files simultaneously using goroutines.
 
 ---
 
 ## Why I Built This
 
-Most developers use compression tools daily without ever thinking about what happens underneath. I built `zip-it` to answer that question for myself: *How does data actually shrink?*
+Most developers use compression tools every day without thinking about what happens underneath. I built `zip-it` to answer that question for myself — *how does data actually shrink?*
 
-This project taught me how computers move data through memory in chunks using buffer streams, how the DEFLATE algorithm exploits repeating patterns in text, and how a professional Go project is structured for real-world use. The result is a tool I actually use — and a codebase I'm proud to show.
+This project taught me how computers move data through memory in chunks using buffer streams, how the DEFLATE algorithm exploits repeating byte patterns, and how to write concurrent Go programs that do real work in parallel. Every feature was built using **Test-Driven Development** and managed with the **Gitflow** branching strategy.
 
 ---
 
 ## Features
 
-| Feature | Description |
-|---|---|
-| Streaming I/O | Processes files in chunks — handles multi-GB files without crashing |
-| Performance Metrics | Reports original size, compressed size, and ratio in real time |
-| Robust Error Handling | Validates file paths, permissions, and flags before execution |
-| Clean CLI Interface | Simple, intuitive argument-driven commands |
+| | Feature | Description |
+|---|---|---|
+| 1. | Streaming I/O | Processes files in chunks — handles multi-GB files on minimal RAM |
+| 2. | Concurrent compression | Compresses multiple files simultaneously using goroutines |
+| 3. | Real-time metrics | Reports original size, compressed size, ratio, and elapsed time |
+| 4. | Robust error handling | Wraps errors with context so failures are always actionable |
+| 5. | Clean CLI interface | Simple argument-driven commands with no dependencies |
 
 ---
 
 ## Installation
 
-**Prerequisites:** Go 1.21+
+**Prerequisites:** Go 1.22+
 
 ```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/file-zipper.git
+git clone https://github.com/its-ryann/file-zipper.git
 cd file-zipper
-
-# Build the binary
 make build
-
-# (Optional) Install globally
-make install
 ```
+
+The binary is output to `./bin/zip-it`.
 
 ---
 
 ## Usage
 
+**Compress a single file:**
 ```bash
-# Compress a file
-zip-it compress myfile.txt
+./bin/zip-it compress myfile.txt
+```
 
-# Decompress a file
-zip-it decompress myfile.txt.gz
+**Decompress a file:**
+```bash
+./bin/zip-it decompress myfile.txt.gz
+```
 
-# Compress with verbose output
-zip-it compress myfile.txt --verbose
+**Compress multiple files concurrently:**
+```bash
+./bin/zip-it compress file1.txt file2.txt file3.txt
 ```
 
 **Example output:**
+```
+✔  file1.txt → file1.txt.gz
+   original:   72 B
+   compressed: 42 B
+   ratio:      41.7% reduction
+   time:       0.001s
 
+✔  file2.txt → file2.txt.gz
+   original:   88 B
+   compressed: 69 B
+   ratio:      21.6% reduction
+   time:       0.001s
+
+✔  file3.txt → file3.txt.gz
+   original:   95 B
+   compressed: 97 B
+   ratio:      -2.1% reduction
+   time:       0.001s
 ```
-✔ Compressed: myfile.txt → myfile.txt.gz
-  Original size:    2.40 MB
-  Compressed size:  612.00 KB
-  Compression ratio: 74.5% reduction
-  Time elapsed:     0.03s
-```
+
+> Note: a negative ratio means the compressed output is larger than the input. This is expected for very small or already-compressed files where Gzip's header overhead exceeds the savings. `zip-it` reports this honestly rather than hiding it.
 
 ---
 
-## Compression Benchmarks
+## How It Works
 
-Results on a MacBook Pro M2 / Ubuntu 22.04 (your results may vary):
+### Streaming I/O
 
-| File Type | Original Size | Compressed Size | Reduction |
+Instead of loading an entire file into RAM, `zip-it` streams data through the gzip encoder in chunks:
+
+```
+[Source File] ──► [Gzip Writer] ──► [Output File]
+```
+
+`io.Copy` moves data continuously without buffering the whole file. A 4 GB file uses the same working memory as a 4 KB file.
+
+```go
+writer := gzip.NewWriter(dst)
+if _, err = io.Copy(writer, src); err != nil {
+    writer.Close()
+    return fmt.Errorf("compress: failed during streaming: %w", err)
+}
+return writer.Close()
+```
+
+Note that `writer.Close()` is called explicitly rather than deferred — this is intentional. The gzip writer flushes its final compressed bytes on close, and that flush can fail. Deferring it silently swallows that error and can produce corrupt output.
+
+### Concurrent Compression
+
+When multiple files are passed, `zip-it` spawns one goroutine per file and collects results through a channel:
+
+```go
+for _, path := range inputPaths {
+    wg.Add(1)
+    go func(inputPath string) {
+        defer wg.Done()
+        // compress and send result to channel
+    }(path)
+}
+```
+
+A `sync.WaitGroup` tracks completion, and the channel is closed once all goroutines finish — allowing the main goroutine to range over results cleanly without a race condition.
+
+### The DEFLATE Algorithm
+
+Gzip uses DEFLATE under the hood, which combines two techniques:
+
+- **LZ77** — identifies repeating byte sequences and replaces them with compact back-references
+- **Huffman coding** — assigns shorter bit patterns to more frequent bytes
+
+This is why plain text and JSON compress aggressively (many repeated words and characters), while PNG images compress poorly (already encoded, minimal repetition).
+
+---
+
+## Benchmarks
+
+Tested on Ubuntu 22.04, Go 1.22.2:
+
+| File type | Original | Compressed | Reduction |
 |---|---|---|---|
-| Plain text `.txt` | 2.4 MB | 612 KB | **74.5%** |
-| JSON data `.json` | 1.1 MB | 98 KB | **91.1%** |
-| Go source `.go` | 480 KB | 142 KB | **70.4%** |
-| PNG image `.png` | 3.2 MB | 3.1 MB | **3.1%** |
-| Binary `.exe` | 8.0 MB | 7.2 MB | **10.0%** |
+| Repetitive plain text | 72 B | 42 B | **41.7%** |
+| Natural language text | 88 B | 69 B | **21.6%** |
+| Low-repetition text | 95 B | 97 B | -2.1% |
 
-> **Why do images compress poorly?** PNG is already compressed. Gzip excels at text and structured data where repeating patterns are abundant.
+For larger, real-world files the gains are more pronounced — a 1 MB JSON API response typically compresses to under 100 KB. This is why HTTP uses Gzip by default.
 
 ---
 
 ## Project Structure
 
 ```
-/file-zipper
-├── main.go              # Entry point — parses CLI arguments
+file-zipper/
+├── main.go                    # Entry point — passes os.Args to Run()
 ├── compressor/
-│   ├── compress.go      # Gzip compression logic
-│   └── decompress.go    # Gzip decompression logic
-├── go.mod               # Module and dependency management
-├── Makefile             # Build, clean, and install automation
-└── README.md            # Documentation and learning log
+│   ├── compressor.go          # Compress() and Decompress() — streaming gzip
+│   ├── compressor_test.go     # Tests for core compression logic
+│   ├── cli.go                 # Run() — argument parsing and dispatch
+│   ├── cli_test.go            # Tests for CLI behaviour
+│   ├── metrics.go             # CalculateRatio(), FormatSize(), Result.Print()
+│   ├── metrics_test.go        # Tests for metrics calculations
+│   ├── concurrent.go          # CompressConcurrent() — goroutine pool
+│   └── concurrent_test.go     # Tests for concurrent behaviour
+├── go.mod
+├── Makefile
+└── README.md
 ```
 
 ---
 
-## How It Works
-
-### 1. Streaming I/O with `io.Reader` & `io.Writer`
-
-Instead of loading an entire file into RAM, `zip-it` uses a **bucket brigade** approach:
-
-```
-[Source File] → [Buffered Reader] → [Gzip Writer] → [Output File]
-```
-
-The `io.Copy` function moves data in 32KB chunks. A 4GB file uses only ~32KB of working memory at any given moment.
-
-```go
-// The core of the compressor — deceptively simple
-src, _ := os.Open(inputPath)
-dst, _ := os.Create(outputPath)
-writer := gzip.NewWriter(dst)
-
-io.Copy(writer, src) // The magic happens here
-writer.Close()
-```
-
-### 2. The DEFLATE Algorithm
-
-Gzip uses **DEFLATE**, which combines two techniques:
-
-- **LZ77** — Finds repeating sequences and replaces them with back-references: *"repeat what I said 50 bytes ago, for 12 bytes."*
-- **Huffman Coding** — Assigns shorter bit patterns to more frequent bytes, like Morse code assigns `·` to the letter E.
-
-This is why text compresses so well (lots of repeated words) and why already-compressed images do not.
-
----
-
-## Makefile Commands
+## Makefile
 
 ```bash
-make build    # Compiles the binary to ./bin/zip-it
-make run      # Builds and runs with default test args
-make clean    # Removes build artifacts
-make install  # Installs binary to /usr/local/bin
-make test     # Runs the test suite
+make build   # compile binary to ./bin/zip-it
+make test    # run full test suite
+make clean   # remove build artifacts
 ```
 
 ---
 
-## Roadmap
+## Development Approach
 
-- [x] Single-file compression and decompression
-- [x] Real-time performance metrics
-- [ ] **Concurrent compression** — compress multiple files simultaneously using goroutines
-- [ ] Progress bar for large files
-- [ ] Directory compression (recursive)
-- [ ] Custom compression level flag (`--level 1-9`)
+This project was built using **Test-Driven Development** — every function was tested before it was implemented. The Red → Green → Refactor cycle was followed for each feature:
+
+1. Write a failing test that defines the expected behaviour
+2. Write the minimum code to make it pass
+3. Refactor for clarity and correctness without breaking the test
+
+Branch management followed the **Gitflow** workflow. Each feature lived on its own `feature/*` branch, was merged into `develop` via a no-fast-forward merge, and `main` was only updated on release.
 
 ---
 
 ## What I Learned
 
-> *This section is my engineering learning log.*
+**Streams vs buffers:** loading a file with `os.ReadFile` works until the file is larger than available RAM. Streaming with `io.Copy` removes that ceiling entirely — memory usage stays flat regardless of file size.
 
-**Streams vs. Buffers:** I initially tried to read entire files into memory with `os.ReadFile`. It worked for small files but would have collapsed on anything large. Switching to streaming `io.Copy` was the first real systems-thinking decision I made in Go.
+**The cost of `Close()`:** a gzip writer holds compressed bytes in a buffer and only flushes them when closed. Deferring close and ignoring its return value silently produces truncated, corrupt output. Explicit close with error handling is the correct pattern.
 
-**The cost of `Close()`:** A Gzip writer buffers its final bytes and only flushes them when you call `.Close()`. Forgetting this produces a corrupt file. Silent bugs like this taught me to always use `defer writer.Close()`.
+**Variable scoping in Go:** using `:=` inside a switch case declares a new local variable — it does not assign to an outer one. This caused a real bug during development where metrics were computed against an empty path. The fix (`=` instead of `:=`) is one character, but catching it required understanding Go's scoping rules precisely.
 
-**Why compression ratios matter for the web:** HTTP responses use Gzip by default. Understanding this project made me realize why a 1MB JSON API response might only cost 80KB of bandwidth.
+**Goroutines and channels:** launching concurrent work is easy in Go. The discipline is in collecting results safely — a buffered channel sized to the number of jobs and a `WaitGroup` to signal completion is the standard pattern, and it composes cleanly.
+
+---
+
+## Roadmap
+
+- [x] Single-file compression
+- [x] Single-file decompression
+- [x] Real-time performance metrics
+- [x] Concurrent multi-file compression
+- [ ] Progress bar for large files
+- [ ] Recursive directory compression
+- [ ] Custom compression level flag (`--level 1-9`)
+- [ ] Decompress multiple files concurrently
 
 ---
 
 ## License
 
 MIT — see [LICENSE](LICENSE) for details.
-
----
-
-## Contributing
-
-Pull requests are welcome. For major changes, please open an issue first to discuss what you'd like to change.
-
-```bash
-# Run tests before submitting a PR
-make test
-```
