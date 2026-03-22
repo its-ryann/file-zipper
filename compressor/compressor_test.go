@@ -41,3 +41,47 @@ func TestCompress(t *testing.T) {
 		t.Errorf("expected compressed file to be smaller, got %d >= %d", info.Size(), inputInfo.Size())
 	}
 }
+
+func TestDecompress(t *testing.T) {
+	// First compress a file so we have something to decompress
+	input, err := os.CreateTemp("", "input-*.txt")
+	if err != nil {
+		t.Fatalf("could not create temp input file: %v", err)
+	}
+	defer os.Remove(input.Name())
+
+	originalContent := "hello hello hello world world world hello hello hello world world world"
+	_, err = input.WriteString(originalContent)
+	if err != nil {
+		t.Fatalf("could not write to temp file: %v", err)
+	}
+	input.Close()
+
+	// Compress it first
+	compressedPath := input.Name() + ".gz"
+	defer os.Remove(compressedPath)
+
+	err = Compress(input.Name(), compressedPath)
+	if err != nil {
+		t.Fatalf("Compress failed: %v", err)
+	}
+
+	// Now decompress it
+	outputPath := input.Name() + ".decompressed.txt"
+	defer os.Remove(outputPath)
+
+	err = Decompress(compressedPath, outputPath)
+	if err != nil {
+		t.Fatalf("Decompress returned an error: %v", err)
+	}
+
+	// Verify the content matches the original exactly
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("could not read decompressed file: %v", err)
+	}
+
+	if string(got) != originalContent {
+		t.Errorf("content mismatch\nwant: %q\ngot:  %q", originalContent, string(got))
+	}
+}
